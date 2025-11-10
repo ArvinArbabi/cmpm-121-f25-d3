@@ -1,17 +1,32 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CMPM 121 D3</title>
-    <link rel="icon" href="data:,">
+    <link rel="icon" href="data:," />
+    <style>
+      html, body, #app, #map {
+        height: 100%;
+        margin: 0;
+      }
+      #map {
+        position: fixed;
+        inset: 0;
+      }
+    </style>
   </head>
-
   <body>
-    <!--
-      Students: Try not to make *any* changes to this index.html file.
-      Instead, express all of your design using TypeScript.
-      -->
+    <div id="app">
+      <div id="map"></div>
+    </div>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>
+
+<!--
+      Students: Try not to make *any* changes to this index.html file.
+      Instead, express all of your design using TypeScript.
+
+      mb im going to try and change it so my code works
+      -->
