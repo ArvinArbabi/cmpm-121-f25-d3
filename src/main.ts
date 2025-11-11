@@ -1,7 +1,8 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import luck from "./_luck.ts";
 
-const CLASSROOM: L.LatLngExpression = [36.9916, -122.0583];
+const CLASSROOM: L.LatLngTuple = [36.9916, -122.0583];
 const CELL_SIZE_DEG = 0.0001;
 const INTERACT_RADIUS_CELLS = 3;
 const TARGET_VALUES = new Set([8, 16]);
@@ -11,227 +12,207 @@ const app = document.getElementById("app") ?? document.body;
 const hudDiv = document.createElement("div");
 hudDiv.id = "hud";
 hudDiv.style.cssText =
-  "position:fixed;left:12px;top:12px;z-index:1000;background:rgba(255,255,255,.9);padding:6px 10px;border-radius:8px;font:600 14px/1.2 system-ui,sans-serif;";
+  "position:fixed;left:12px;top:12px;z-index:1000;background:rgba(255,255,255,.9);padding:6px 10px;border-radius:8px;font-family:sans-serif;font-size:14px;";
 app.appendChild(hudDiv);
+
 const msgDiv = document.createElement("div");
 msgDiv.id = "msg";
 msgDiv.style.cssText =
-  "position:fixed;left:50%;top:12px;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:6px 10px;border-radius:8px;z-index:1000;opacity:0;transition:opacity .2s;font:600 13px/1 system-ui,sans-serif;";
+  "position:fixed;left:50%;top:12px;transform:translateX(-50%);background:rgba(0,0,0,.8);color:white;padding:6px 10px;border-radius:8px;font-family:sans-serif;font-size:14px;z-index:1000;opacity:0;transition:opacity .2s;";
 app.appendChild(msgDiv);
-const mapEl = document.getElementById("map") as HTMLDivElement;
-function ensureFullScreen() {
-  document.documentElement.style.height = "100%";
-  document.body.style.height = "100%";
-  if (mapEl) {
-    mapEl.style.position = "absolute";
-    mapEl.style.top = "0";
-    mapEl.style.left = "0";
-    mapEl.style.right = "0";
-    mapEl.style.bottom = "0";
-    mapEl.style.height = "100%";
-    mapEl.style.width = "100%";
-  }
-}
-ensureFullScreen();
-const map = L.map(mapEl ?? document.body).setView(CLASSROOM, 18);
+
+const mapEl = document.getElementById("map") as HTMLElement;
+document.documentElement.style.height = "100%";
+document.body.style.height = "100%";
+if (mapEl) mapEl.style.height = "100%";
+
+const map = L.map(mapEl).setView(CLASSROOM, 18);
+
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution: "&copy; OpenStreetMap contributors",
-  maxZoom: 20,
+  attribution: "© OpenStreetMap contributors",
+  maxZoom: 19,
+  minZoom: 0,
+  crossOrigin: true,
+  errorTileUrl: "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=",
 }).addTo(map);
-L.control.zoom({ position: "bottomright" }).addTo(map);
-setTimeout(() => map.invalidateSize(), 0);
+
 addEventListener("resize", () => map.invalidateSize());
-const player = L.circleMarker(CLASSROOM, { radius: 6 }).addTo(map);
-player.bindTooltip("You", {
-  permanent: true,
-  direction: "top",
-  offset: [0, -8],
-});
 
-function hash32(i: number, j: number, seed = GAME_SEED): number {
-  let h =
-    (Math.imul(i | 0, 374761393) ^ Math.imul(j | 0, 668265263) ^ (seed | 0)) >>>
-    0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
-  return (h ^ (h >>> 16)) >>> 0;
-}
-const rng01 = (h: number) => (h >>> 0) / 4294967296;
+const LS_DELTA = "d3a_deltas";
+const LS_INV = "d3a_inv";
 
-function baseTokenForCell(i: number, j: number): number {
-  const h = hash32(i, j);
-  const r = rng01(h);
-  if (r < 0.45) return 0;
-  const bucket = rng01(hash32(i ^ 0x9e37, j ^ 0x9e37));
-  if (bucket < 0.6) return 1;
-  if (bucket < 0.85) return 2;
-  if (bucket < 0.95) return 4;
-  if (bucket < 0.99) return 8;
-  return 16;
+type CellKey = string;
+type Delta = Record<CellKey, number | null>;
+
+function cellKey(i: number, j: number): CellKey {
+  return `${i},${j}`;
 }
 
-const LS_INV = "d3a.inv";
-const LS_DELTA = "d3a.delta";
-type Delta = Record<string, { v: number }>;
-const loadInv = () => +(localStorage.getItem(LS_INV) ?? "0");
-const saveInv = (v: number) => localStorage.setItem(LS_INV, String(v));
-const loadDelta = (): Delta => {
+function worldToCell(lat: number, lng: number): [number, number] {
+  const i = Math.floor((lat - CLASSROOM[0]) / CELL_SIZE_DEG);
+  const j = Math.floor((lng - CLASSROOM[1]) / CELL_SIZE_DEG);
+  return [i, j];
+}
+
+function cellToWorld(i: number, j: number): [number, number] {
+  const lat = CLASSROOM[0] + i * CELL_SIZE_DEG;
+  const lng = CLASSROOM[1] + j * CELL_SIZE_DEG;
+  return [lat, lng];
+}
+
+function loadDeltas(): Delta {
   try {
-    return JSON.parse(localStorage.getItem(LS_DELTA) ?? "{}");
+    return JSON.parse(localStorage.getItem(LS_DELTA) || "{}");
   } catch {
     return {};
   }
-};
-const saveDelta = (d: Delta) =>
+}
+
+function saveDeltas(d: Delta) {
   localStorage.setItem(LS_DELTA, JSON.stringify(d));
-const delta = loadDelta();
-
-const keyOf = (i: number, j: number) => `${i},${j}`;
-const getCellValue = (i: number, j: number) =>
-  delta[keyOf(i, j)]?.v ?? baseTokenForCell(i, j);
-const setCellValue = (i: number, j: number, v: number) => {
-  delta[keyOf(i, j)] = { v };
-  saveDelta(delta);
-  redrawCell(i, j);
-};
-
-const latToI = (lat: number) => Math.floor(lat / CELL_SIZE_DEG);
-const lngToJ = (lng: number) => Math.floor(lng / CELL_SIZE_DEG);
-const ijToBounds = (
-  i: number,
-  j: number,
-): L.LatLngBoundsExpression => [[i * CELL_SIZE_DEG, j * CELL_SIZE_DEG], [
-  (i + 1) * CELL_SIZE_DEG,
-  (j + 1) * CELL_SIZE_DEG,
-]];
-const playerId = {
-  i: latToI((CLASSROOM as [number, number])[0]),
-  j: lngToJ((CLASSROOM as [number, number])[1]),
-};
-const chebyshev = (a: { i: number; j: number }, b: { i: number; j: number }) =>
-  Math.max(Math.abs(a.i - b.i), Math.abs(a.j - b.j));
-
-const gridLayer = L.layerGroup().addTo(map);
-const labelLayer = L.layerGroup().addTo(map);
-const cellToRect = new Map<string, L.Rectangle>();
-const cellToLabel = new Map<string, L.Marker>();
-
-function styleForCell(i: number, j: number): L.PathOptions {
-  const v = getCellValue(i, j);
-  const near = chebyshev({ i, j }, playerId) <= INTERACT_RADIUS_CELLS;
-  return {
-    color: near ? "#333" : "#777",
-    weight: near ? 1 : 0.5,
-    fill: v > 0,
-    fillOpacity: v > 0 ? 0.12 : 0,
-    fillColor: v >= 16
-      ? "#7fbf7f"
-      : v >= 8
-      ? "#9fd3ff"
-      : v >= 4
-      ? "#ffd27f"
-      : v >= 2
-      ? "#ffb3b3"
-      : "#dddddd",
-  };
 }
-const labelHtml = (
-  v: number,
-) => (v > 0
-  ? `<div class="v" style="background:rgba(255,255,255,.92);padding:2px 4px;border-radius:6px;font:600 12px/1 system-ui,sans-serif;">${v}</div>`
-  : "");
 
-function drawCell(i: number, j: number) {
-  const k = keyOf(i, j);
-  const bounds = ijToBounds(i, j);
-  const rect = L.rectangle(bounds, styleForCell(i, j)).addTo(gridLayer);
-  rect.on("click", () => onCellClick(i, j));
-  cellToRect.set(k, rect);
-  const center = L.rectangle(bounds).getBounds().getCenter();
-  const label = L.marker(center, {
-    interactive: false,
-    icon: L.divIcon({
-      className: "cell-label",
-      html: labelHtml(getCellValue(i, j)),
-      iconSize: [24, 24],
-    }),
-  }).addTo(labelLayer);
-  cellToLabel.set(k, label);
+function loadInv(): number | null {
+  const v = localStorage.getItem(LS_INV);
+  return v ? Number(v) : null;
 }
-function redrawCell(i: number, j: number) {
-  const k = keyOf(i, j);
-  const r = cellToRect.get(k);
-  const m = cellToLabel.get(k);
-  if (r) r.setStyle(styleForCell(i, j));
-  if (m) {
-    const el = m.getElement() as HTMLElement | null;
-    if (el) el.innerHTML = labelHtml(getCellValue(i, j));
-  }
-}
-function cellsInView(): Array<{ i: number; j: number }> {
-  const b = map.getBounds();
-  const i0 = latToI(b.getSouth()), i1 = latToI(b.getNorth());
-  const j0 = lngToJ(b.getWest()), j1 = lngToJ(b.getEast());
-  const ids: Array<{ i: number; j: number }> = [];
-  for (let i = i0; i <= i1; i++) {
-    for (let j = j0; j <= j1; j++) ids.push({ i, j });
-  }
-  return ids;
-}
-function refreshGrid() {
-  gridLayer.clearLayers();
-  labelLayer.clearLayers();
-  cellToRect.clear();
-  cellToLabel.clear();
-  for (const { i, j } of cellsInView()) drawCell(i, j);
-}
-map.on("moveend", refreshGrid);
-refreshGrid();
 
+function saveInv(v: number | null) {
+  if (v === null) localStorage.removeItem(LS_INV);
+  else localStorage.setItem(LS_INV, v.toString());
+}
+
+const deltas = loadDeltas();
 let held = loadInv();
-function setHeld(v: number) {
-  held = v;
-  saveInv(held);
-  hudDiv.textContent = held > 0 ? `Holding: ${held}` : "Holding: (empty)";
-  if (held > 0 && TARGET_VALUES.has(held)) toast(`You now hold ${held}`);
-}
-setHeld(held);
 
-function toast(text: string) {
-  msgDiv.textContent = text;
+function toast(t: string) {
+  msgDiv.textContent = t;
   msgDiv.style.opacity = "1";
   setTimeout(() => {
     msgDiv.style.opacity = "0";
-  }, 1200);
+  }, 1000);
+}
+
+function setHud() {
+  hudDiv.textContent = held ? `Holding: ${held}` : "Holding: (empty)";
+}
+
+setHud();
+
+function baseValue(i: number, j: number) {
+  const r = luck(`${GAME_SEED}|${i}|${j}`);
+  if (r < 0.6) return null;
+  if (r < 0.85) return 1;
+  if (r < 0.95) return 2;
+  if (r < 0.99) return 4;
+  return 8;
+}
+
+function getCellValue(i: number, j: number): number | null {
+  const key = cellKey(i, j);
+  if (key in deltas) return deltas[key] ?? null;
+  return baseValue(i, j);
+}
+
+function setCellValue(i: number, j: number, v: number | null) {
+  const key = cellKey(i, j);
+  deltas[key] = v;
+  saveDeltas(deltas);
+}
+
+function setHeld(v: number | null) {
+  held = v;
+  saveInv(v);
+  setHud();
+}
+
+const player = L.circleMarker(CLASSROOM, { radius: 6, color: "blue" }).addTo(
+  map,
+);
+player.bindTooltip("You");
+
+function inRange(i: number, j: number): boolean {
+  const [pi, pj] = worldToCell(CLASSROOM[0], CLASSROOM[1]);
+  return Math.abs(i - pi) <= INTERACT_RADIUS_CELLS &&
+    Math.abs(j - pj) <= INTERACT_RADIUS_CELLS;
 }
 
 function onCellClick(i: number, j: number) {
-  if (chebyshev({ i, j }, playerId) > INTERACT_RADIUS_CELLS) {
+  if (!inRange(i, j)) {
     toast("Too far");
     return;
   }
   const v = getCellValue(i, j);
-  if (held === 0) {
-    if (v > 0) {
-      setHeld(v);
-      setCellValue(i, j, 0);
-      toast(`Picked up ${v}`);
-    } else toast("Empty");
-    return;
-  }
-  if (v === 0) {
+  if (v === null && held !== null) {
     setCellValue(i, j, held);
-    setHeld(0);
-    toast("Placed token");
-    return;
+    setHeld(null);
+    toast("Placed");
+    renderCells();
+  } else if (v !== null && held === null) {
+    setCellValue(i, j, null);
+    setHeld(v);
+    toast(`Picked up ${v}`);
+    renderCells();
+  } else if (v !== null && held !== null) {
+    if (v === held) {
+      setCellValue(i, j, v * 2);
+      setHeld(null);
+      toast(`Crafted ${v * 2}`);
+      renderCells();
+      if (TARGET_VALUES.has(v * 2)) toast(`You made ${v * 2}!`);
+    } else {
+      toast("Doesn't match");
+    }
   }
-  if (v === held) {
-    setCellValue(i, j, v * 2);
-    setHeld(0);
-    toast(`Crafted ${v * 2}`);
-    return;
-  }
-  toast("Doesn't match");
 }
+
+const cellLayers: Record<CellKey, L.Rectangle> = {};
+
+function renderCells() {
+  const bounds = map.getBounds();
+  const latMin = bounds.getSouth();
+  const latMax = bounds.getNorth();
+  const lngMin = bounds.getWest();
+  const lngMax = bounds.getEast();
+  const iMin = Math.floor((latMin - CLASSROOM[0]) / CELL_SIZE_DEG);
+  const iMax = Math.floor((latMax - CLASSROOM[0]) / CELL_SIZE_DEG);
+  const jMin = Math.floor((lngMin - CLASSROOM[1]) / CELL_SIZE_DEG);
+  const jMax = Math.floor((lngMax - CLASSROOM[1]) / CELL_SIZE_DEG);
+  for (let i = iMin; i <= iMax; i++) {
+    for (let j = jMin; j <= jMax; j++) {
+      const key = cellKey(i, j);
+      let rect = cellLayers[key];
+      const [lat, lng] = cellToWorld(i, j);
+      const cellBounds = [
+        [lat, lng],
+        [lat + CELL_SIZE_DEG, lng + CELL_SIZE_DEG],
+      ] as L.LatLngBoundsExpression;
+      const val = getCellValue(i, j);
+      const color = inRange(i, j) ? "black" : "gray";
+      if (!rect) {
+        rect = L.rectangle(cellBounds, {
+          color,
+          weight: 0.5,
+          fillOpacity: 0.1,
+        });
+        rect.addTo(map);
+        rect.on("click", () => onCellClick(i, j));
+        cellLayers[key] = rect;
+      } else {
+        rect.setBounds(cellBounds);
+      }
+      const label = val === null ? "" : val.toString();
+      rect.bindTooltip(label, {
+        permanent: true,
+        direction: "center",
+        className: "cell-label",
+      }).openTooltip();
+    }
+  }
+}
+
+map.on("moveend", renderCells);
+renderCells();
 
 type G = typeof globalThis & { d3aReset: () => void };
 const g = globalThis as G;
