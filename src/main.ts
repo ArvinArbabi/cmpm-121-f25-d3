@@ -5,7 +5,8 @@ import luck from "./_luck.ts";
 const CLASSROOM: L.LatLngTuple = [36.9916, -122.0583];
 const CELL_SIZE_DEG = 0.0001;
 const INTERACT_RADIUS_CELLS = 3;
-const LABEL_RADIUS_CELLS = 5;
+//adding a label radius so i can control how much you can see (also helps prevent ur laptop from blowing up)
+const LABEL_RADIUS_CELLS = 10;
 const TARGET_VALUES = new Set([8, 16]);
 const GAME_SEED = 12125;
 
