@@ -2,33 +2,55 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import luck from "./_luck.ts";
 
-const CLASSROOM: L.LatLngTuple = [36.9916, -122.0583];
+const START_POS: L.LatLngTuple = [36.9916, -122.0583];
 const CELL_SIZE_DEG = 0.0001;
 const INTERACT_RADIUS_CELLS = 3;
-//adding a label radius so i can control how much you can see (also helps prevent ur laptop from blowing up)
-const LABEL_RADIUS_CELLS = 10;
-const TARGET_VALUES = new Set([8, 16]);
+const LABEL_RADIUS_CELLS = 8;
+const VICTORY_VALUE = 32;
 const GAME_SEED = 12125;
 
 const app = document.getElementById("app") ?? document.body;
-const hudDiv = document.createElement("div");
-hudDiv.id = "hud";
-hudDiv.style.cssText =
-  "position:fixed;left:12px;top:12px;z-index:1000;background:rgba(255,255,255,.9);padding:6px 10px;border-radius:8px;font-family:sans-serif;font-size:14px;";
-app.appendChild(hudDiv);
 
-const msgDiv = document.createElement("div");
-msgDiv.id = "msg";
-msgDiv.style.cssText =
-  "position:fixed;left:50%;top:12px;transform:translateX(-50%);background:rgba(0,0,0,.8);color:white;padding:6px 10px;border-radius:8px;font-family:sans-serif;font-size:14px;z-index:1000;opacity:0;transition:opacity .2s;";
-app.appendChild(msgDiv);
+const hud = document.createElement("div");
+hud.style.cssText =
+  "position:fixed;left:12px;top:12px;z-index:1000;background:rgba(255,255,255,.9);padding:6px 10px;border-radius:8px;font:14px system-ui,sans-serif";
+app.appendChild(hud);
+
+const msg = document.createElement("div");
+msg.style.cssText =
+  "position:fixed;left:50%;top:12px;transform:translateX(-50%);background:rgba(0,0,0,.85);color:#fff;padding:6px 10px;border-radius:8px;font:14px system-ui,sans-serif;z-index:1000;opacity:0;transition:opacity .2s";
+app.appendChild(msg);
+
+const controls = document.createElement("div");
+controls.style.cssText =
+  "position:fixed;right:12px;top:12px;z-index:1000;display:grid;grid-template-columns:repeat(3,36px);grid-auto-rows:36px;gap:6px";
+app.appendChild(controls);
+
+function mkBtn(t: string, on: () => void) {
+  const b = document.createElement("button");
+  b.textContent = t;
+  b.style.cssText =
+    "background:#fff;border:1px solid #ccc;border-radius:8px;cursor:pointer";
+  b.onclick = on;
+  controls.appendChild(b);
+}
+
+mkBtn("", () => {});
+mkBtn("↑", () => moveBy(1, 0));
+mkBtn("", () => {});
+mkBtn("←", () => moveBy(0, -1));
+mkBtn("•", () => centerOnPlayer());
+mkBtn("→", () => moveBy(0, 1));
+mkBtn("", () => {});
+mkBtn("↓", () => moveBy(-1, 0));
+mkBtn("", () => {});
 
 const mapEl = document.getElementById("map") as HTMLElement;
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
 if (mapEl) mapEl.style.height = "100%";
 
-const map = L.map(mapEl).setView(CLASSROOM, 18);
+const map = L.map(mapEl).setView(START_POS, 18);
 
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "© OpenStreetMap contributors",
@@ -44,9 +66,6 @@ const canvasRenderer = L.canvas();
 const gridLayer = L.layerGroup().addTo(map);
 const labelLayer = L.layerGroup().addTo(map);
 
-const LS_DELTA = "d3a_deltas";
-const LS_INV = "d3a_inv";
-
 type CellKey = string;
 type Delta = Record<CellKey, number | null>;
 
@@ -54,46 +73,27 @@ function cellKey(i: number, j: number): CellKey {
   return `${i},${j}`;
 }
 function worldToCell(lat: number, lng: number): [number, number] {
-  const i = Math.floor((lat - CLASSROOM[0]) / CELL_SIZE_DEG);
-  const j = Math.floor((lng - CLASSROOM[1]) / CELL_SIZE_DEG);
+  const i = Math.floor(lat / CELL_SIZE_DEG);
+  const j = Math.floor(lng / CELL_SIZE_DEG);
   return [i, j];
 }
 function cellToWorld(i: number, j: number): [number, number] {
-  const lat = CLASSROOM[0] + i * CELL_SIZE_DEG;
-  const lng = CLASSROOM[1] + j * CELL_SIZE_DEG;
-  return [lat, lng];
-}
-function loadDeltas(): Delta {
-  try {
-    return JSON.parse(localStorage.getItem(LS_DELTA) || "{}");
-  } catch {
-    return {};
-  }
-}
-function saveDeltas(d: Delta) {
-  localStorage.setItem(LS_DELTA, JSON.stringify(d));
-}
-function loadInv(): number | null {
-  const v = localStorage.getItem(LS_INV);
-  return v ? Number(v) : null;
-}
-function saveInv(v: number | null) {
-  if (v === null) localStorage.removeItem(LS_INV);
-  else localStorage.setItem(LS_INV, v.toString());
+  return [i * CELL_SIZE_DEG, j * CELL_SIZE_DEG];
 }
 
-const deltas = loadDeltas();
-let held = loadInv();
+const deltas: Delta = {};
+let held: number | null = null;
+let playerPos: L.LatLngTuple = START_POS;
 
 function toast(t: string) {
-  msgDiv.textContent = t;
-  msgDiv.style.opacity = "1";
+  msg.textContent = t;
+  msg.style.opacity = "1";
   setTimeout(() => {
-    msgDiv.style.opacity = "0";
+    msg.style.opacity = "0";
   }, 1000);
 }
 function setHud() {
-  hudDiv.textContent = held ? `Holding: ${held}` : "Holding: (empty)";
+  hud.textContent = held ? `Holding: ${held}` : "Holding: (empty)";
 }
 setHud();
 
@@ -106,33 +106,27 @@ function baseValue(i: number, j: number) {
   return 8;
 }
 function getCellValue(i: number, j: number): number | null {
-  const key = cellKey(i, j);
-  if (key in deltas) return deltas[key] ?? null;
+  const k = cellKey(i, j);
+  if (k in deltas) return deltas[k] ?? null;
   return baseValue(i, j);
 }
 function setCellValue(i: number, j: number, v: number | null) {
-  const key = cellKey(i, j);
-  deltas[key] = v;
-  saveDeltas(deltas);
-}
-function setHeld(v: number | null) {
-  held = v;
-  saveInv(v);
-  setHud();
+  const k = cellKey(i, j);
+  deltas[k] = v;
 }
 
-const player = L.circleMarker(CLASSROOM, { radius: 6, color: "blue" }).addTo(
+const player = L.circleMarker(playerPos, { radius: 6, color: "blue" }).addTo(
   map,
 );
 player.bindTooltip("You");
 
 function inRange(i: number, j: number): boolean {
-  const [pi, pj] = worldToCell(CLASSROOM[0], CLASSROOM[1]);
+  const [pi, pj] = worldToCell(playerPos[0], playerPos[1]);
   return Math.abs(i - pi) <= INTERACT_RADIUS_CELLS &&
     Math.abs(j - pj) <= INTERACT_RADIUS_CELLS;
 }
 function nearForLabel(i: number, j: number): boolean {
-  const [pi, pj] = worldToCell(CLASSROOM[0], CLASSROOM[1]);
+  const [pi, pj] = worldToCell(playerPos[0], playerPos[1]);
   return Math.abs(i - pi) <= LABEL_RADIUS_CELLS &&
     Math.abs(j - pj) <= LABEL_RADIUS_CELLS;
 }
@@ -145,22 +139,28 @@ function onCellClick(i: number, j: number) {
   const v = getCellValue(i, j);
   if (v === null && held !== null) {
     setCellValue(i, j, held);
-    setHeld(null);
+    held = null;
+    setHud();
     toast("Placed");
     scheduleRender();
   } else if (v !== null && held === null) {
     setCellValue(i, j, null);
-    setHeld(v);
+    held = v;
+    setHud();
     toast(`Picked up ${v}`);
     scheduleRender();
   } else if (v !== null && held !== null) {
     if (v === held) {
-      setCellValue(i, j, v * 2);
-      setHeld(null);
-      toast(`Crafted ${v * 2}`);
+      const nv = v * 2;
+      setCellValue(i, j, nv);
+      held = null;
+      setHud();
+      toast(`Crafted ${nv}`);
       scheduleRender();
-      if (TARGET_VALUES.has(v * 2)) toast(`You made ${v * 2}!`);
-    } else toast("Doesn't match");
+      if (nv >= VICTORY_VALUE) toast("Victory!");
+    } else {
+      toast("Doesn't match");
+    }
   }
 }
 
@@ -172,6 +172,8 @@ function styleFor(i: number, j: number, v: number | null): L.PathOptions {
   const color = near ? "#222" : "#777";
   const fillColor = v === null
     ? "#dddddd"
+    : v >= 32
+    ? "#7ad17a"
     : v >= 16
     ? "#7fbf7f"
     : v >= 8
@@ -207,12 +209,12 @@ function drawOrUpdateCell(i: number, j: number) {
     r.setBounds(bounds);
     r.setStyle(styleFor(i, j, v));
   }
-  const showLabel = v !== null && nearForLabel(i, j);
+  const show = v !== null && nearForLabel(i, j);
   let m = labels.get(k);
-  if (showLabel) {
+  if (show) {
     const center = L.rectangle(bounds).getBounds().getCenter();
     const html =
-      `<div style="background:rgba(255,255,255,.92);padding:2px 4px;border-radius:6px;font:600 12px/1 system-ui,sans-serif;">${v}</div>`;
+      `<div style="background:rgba(255,255,255,.92);padding:2px 4px;border-radius:6px;font:600 12px/1 system-ui,sans-serif">${v}</div>`;
     if (!m) {
       m = L.marker(center, {
         interactive: false,
@@ -235,6 +237,7 @@ function cullOffscreen(keep: Set<string>) {
     if (!keep.has(k)) {
       rects.get(k)?.remove();
       rects.delete(k);
+      delete deltas[k];
     }
   }
   for (const k of labels.keys()) {
@@ -247,10 +250,10 @@ function cullOffscreen(keep: Set<string>) {
 
 function renderCells() {
   const b = map.getBounds();
-  const iMin = Math.floor((b.getSouth() - CLASSROOM[0]) / CELL_SIZE_DEG);
-  const iMax = Math.floor((b.getNorth() - CLASSROOM[0]) / CELL_SIZE_DEG);
-  const jMin = Math.floor((b.getWest() - CLASSROOM[1]) / CELL_SIZE_DEG);
-  const jMax = Math.floor((b.getEast() - CLASSROOM[1]) / CELL_SIZE_DEG);
+  const iMin = Math.floor(b.getSouth() / CELL_SIZE_DEG);
+  const iMax = Math.floor(b.getNorth() / CELL_SIZE_DEG);
+  const jMin = Math.floor(b.getWest() / CELL_SIZE_DEG);
+  const jMax = Math.floor(b.getEast() / CELL_SIZE_DEG);
   const keep = new Set<string>();
   for (let i = iMin; i <= iMax; i++) {
     for (let j = jMin; j <= jMax; j++) {
@@ -270,14 +273,17 @@ function scheduleRender() {
   });
 }
 
+function moveBy(di: number, dj: number) {
+  const [i, j] = worldToCell(playerPos[0], playerPos[1]);
+  const [lat, lng] = cellToWorld(i + di, j + dj);
+  playerPos = [lat + CELL_SIZE_DEG / 2, lng + CELL_SIZE_DEG / 2];
+  player.setLatLng(playerPos);
+  scheduleRender();
+}
+function centerOnPlayer() {
+  map.panTo(playerPos);
+}
+
 map.on("move", scheduleRender);
 map.on("moveend", scheduleRender);
 scheduleRender();
-
-type G = typeof globalThis & { d3aReset: () => void };
-const g = globalThis as G;
-g.d3aReset = () => {
-  localStorage.removeItem(LS_DELTA);
-  localStorage.removeItem(LS_INV);
-  location.reload();
-};
