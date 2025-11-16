@@ -9,6 +9,11 @@ const LABEL_RADIUS_CELLS = 8;
 const VICTORY_VALUE = 32;
 const GAME_SEED = 12125;
 
+type CellKey = string;
+type CellMemento = {
+  value: number | null;
+};
+
 const app = document.getElementById("app") ?? document.body;
 
 const hud = document.createElement("div");
@@ -66,22 +71,21 @@ const canvasRenderer = L.canvas();
 const gridLayer = L.layerGroup().addTo(map);
 const labelLayer = L.layerGroup().addTo(map);
 
-type CellKey = string;
-type Delta = Record<CellKey, number | null>;
-
 function cellKey(i: number, j: number): CellKey {
   return `${i},${j}`;
 }
+
 function worldToCell(lat: number, lng: number): [number, number] {
   const i = Math.floor(lat / CELL_SIZE_DEG);
   const j = Math.floor(lng / CELL_SIZE_DEG);
   return [i, j];
 }
+
 function cellToWorld(i: number, j: number): [number, number] {
   return [i * CELL_SIZE_DEG, j * CELL_SIZE_DEG];
 }
 
-const deltas: Delta = {};
+const cellStates = new Map<CellKey, CellMemento>();
 let held: number | null = null;
 let playerPos: L.LatLngTuple = START_POS;
 
@@ -92,6 +96,7 @@ function toast(t: string) {
     msg.style.opacity = "0";
   }, 1000);
 }
+
 function setHud() {
   hud.textContent = held ? `Holding: ${held}` : "Holding: (empty)";
 }
@@ -105,14 +110,17 @@ function baseValue(i: number, j: number) {
   if (r < 0.99) return 4;
   return 8;
 }
+
 function getCellValue(i: number, j: number): number | null {
   const k = cellKey(i, j);
-  if (k in deltas) return deltas[k] ?? null;
+  const m = cellStates.get(k);
+  if (m) return m.value;
   return baseValue(i, j);
 }
+
 function setCellValue(i: number, j: number, v: number | null) {
   const k = cellKey(i, j);
-  deltas[k] = v;
+  cellStates.set(k, { value: v });
 }
 
 const player = L.circleMarker(playerPos, { radius: 6, color: "blue" }).addTo(
@@ -125,6 +133,7 @@ function inRange(i: number, j: number): boolean {
   return Math.abs(i - pi) <= INTERACT_RADIUS_CELLS &&
     Math.abs(j - pj) <= INTERACT_RADIUS_CELLS;
 }
+
 function nearForLabel(i: number, j: number): boolean {
   const [pi, pj] = worldToCell(playerPos[0], playerPos[1]);
   return Math.abs(i - pi) <= LABEL_RADIUS_CELLS &&
@@ -237,7 +246,6 @@ function cullOffscreen(keep: Set<string>) {
     if (!keep.has(k)) {
       rects.get(k)?.remove();
       rects.delete(k);
-      delete deltas[k];
     }
   }
   for (const k of labels.keys()) {
@@ -280,6 +288,7 @@ function moveBy(di: number, dj: number) {
   player.setLatLng(playerPos);
   scheduleRender();
 }
+
 function centerOnPlayer() {
   map.panTo(playerPos);
 }
