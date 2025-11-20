@@ -143,7 +143,8 @@ function loadGameState() {
     ) {
       movementMode = data.movementMode;
     }
-  } catch {
+  } catch (err) {
+    console.warn("loadGameState failed", err);
   }
 }
 
@@ -160,8 +161,8 @@ function saveGameState() {
       movementMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    //empty catch
+  } catch (err) {
+    console.warn("saveGameState failed", err);
   }
 }
 
